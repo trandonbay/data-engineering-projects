@@ -2,31 +2,35 @@ import requests
 import psycopg2
 import pandas as pd
 from datetime import datetime
+import os
 
-URL = "https://api.coingecko.com/api/v3/simple/price"
-
+# API endpoint to retrieve top N coins
+URL = "https://api.coingecko.com/api/v3/coins/markets"
 PARAMS = {
-    "ids": "bitcoin,ethereum",
-    "vs_currencies": "usd"
+    "vs_currency": "usd",
+    "order": "market_cap_desc",
+    "per_page": 10,
+    "page": 1,
+    "precision": "2",
 }
+HEADERS = { "x-cg-demo-api-key": os.getenv("COINGECKO_API_KEY") }
 
 def extract():
-    response = requests.get(URL, params=PARAMS)
+    response = requests.get(URL, params=PARAMS, headers=HEADERS)
     return response.json()
 
 def transform(data):
-    df = pd.DataFrame(data).T.reset_index()
-    df.columns = ["coin", "price_usd"]
-
+    df = pd.DataFrame(data)
+    df = df[["name", "current_price", "market_cap", "total_volume", "market_cap_rank"]]
+    df.columns = ["coin", "price_usd", "market_cap", "volume", "rank"]
     df["extracted_at"] = pd.Timestamp.now('UTC')
-
     df["price_usd"] = df["price_usd"].astype(float)
 
     return df
 
 def load_raw(df):
     conn = psycopg2.connect(
-        host="localhost",
+        host="postgres",
         port=5432,
         database="crypto",
         user="admin",
@@ -43,10 +47,10 @@ def load_raw(df):
     for _, row in df.iterrows():
         cursor.execute(
             """
-            INSERT INTO raw_prices (coin, price_usd, extracted_at)
-            VALUES (%s, %s, %s)
+            INSERT INTO raw_prices (coin, price_usd, market_cap, volume, rank, extracted_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
-            (row["coin"], row["price_usd"], row["extracted_at"])
+            (row["coin"], row["price_usd"], row["market_cap"], row["volume"], row["rank"], row["extracted_at"])
         )
 
     conn.commit()
@@ -55,7 +59,7 @@ def load_raw(df):
 
 def transform_sql():
     conn = psycopg2.connect(
-        host="localhost",
+        host="postgres",
         port=5432,
         database="crypto",
         user="admin",
@@ -71,8 +75,8 @@ def transform_sql():
 
     cursor.execute(
         """
-        INSERT INTO clean_prices (coin, price_usd, extracted_at)
-        SELECT coin, price_usd, extracted_at
+        INSERT INTO clean_prices (coin, price_usd, market_cap, volume, rank, extracted_at)
+        SELECT coin, price_usd, market_cap, volume, rank, extracted_at
         FROM raw_prices
         WHERE price_usd IS NOT NULL
         """
